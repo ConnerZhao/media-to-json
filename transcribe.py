@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any, Iterable
 
 if TYPE_CHECKING:
     from faster_whisper import WhisperModel
+    from tqdm import tqdm as TqdmType
 
 
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v"}
@@ -118,6 +119,11 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=5,
         help="Beam size used for decoding. Default: 5.",
+    )
+    parser.add_argument(
+        "--txt",
+        action="store_true",
+        help="Write plain-text transcripts (.txt) instead of JSON.",
     )
     parser.add_argument(
         "--verbose",
@@ -228,19 +234,22 @@ def discover_media(
     return media_files
 
 
-def make_jobs(media_files: Iterable[Path], output_dir: Path, overwrite: bool) -> list[MediaJob]:
+def make_jobs(
+    media_files: Iterable[Path], output_dir: Path, overwrite: bool, txt: bool
+) -> list[MediaJob]:
     output_dir = output_dir.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    ext = ".txt" if txt else ".json"
     jobs: list[MediaJob] = []
     seen_outputs: dict[Path, int] = {}
     for media in media_files:
-        base_output = output_dir / f"{media.stem}.json"
+        base_output = output_dir / f"{media.stem}{ext}"
         output_file = base_output
 
         if output_file in seen_outputs:
             seen_outputs[base_output] += 1
-            output_file = output_dir / f"{media.stem}_{seen_outputs[base_output]}.json"
+            output_file = output_dir / f"{media.stem}_{seen_outputs[base_output]}{ext}"
         else:
             seen_outputs[base_output] = 1
 
@@ -337,6 +346,14 @@ def transcribe_audio(
     beam_size: int,
 ) -> tuple[str | None, list[dict[str, float | str]]]:
     try:
+        from tqdm import tqdm
+    except ImportError as exc:
+        raise TranscriptionError(
+            "Python package 'tqdm' is not installed. "
+            "Run: pip install -r requirements-transcribe.txt"
+        ) from exc
+
+    try:
         segments_iter, info = model.transcribe(
             str(audio_path),
             language=language,
@@ -344,16 +361,29 @@ def transcribe_audio(
             vad_filter=True,
             word_timestamps=False,
         )
-        segments = [
-            {
-                "start_time": round(segment.start, 3),
-                "end_time": round(segment.end, 3),
-                "text": segment.text.strip(),
-            }
-            for segment in segments_iter
-            if segment.text.strip()
-        ]
+        segments: list[dict[str, float | str]] = []
+        last_end = 0.0
+        with tqdm(
+            total=round(info.duration),
+            unit="s",
+            unit_scale=True,
+            desc="  Transcribing",
+            dynamic_ncols=True,
+        ) as bar:
+            for segment in segments_iter:
+                if segment.text.strip():
+                    segments.append({
+                        "start_time": round(segment.start, 3),
+                        "end_time": round(segment.end, 3),
+                        "text": segment.text.strip(),
+                    })
+                advance = segment.end - last_end
+                if advance > 0:
+                    bar.update(round(advance))
+                    last_end = segment.end
         return info.language, segments
+    except TranscriptionError:
+        raise
     except Exception as exc:
         raise TranscriptionError(f"Transcription failed for {audio_path}: {exc}") from exc
 
@@ -383,11 +413,19 @@ def write_json(output_file: Path, payload: dict[str, object]) -> None:
         raise TranscriptionError(f"Could not write JSON output {output_file}: {exc}") from exc
 
 
+def write_txt(output_file: Path, full_transcript: str) -> None:
+    try:
+        output_file.write_text(full_transcript + "\n", encoding="utf-8")
+    except OSError as exc:
+        raise TranscriptionError(f"Could not write text output {output_file}: {exc}") from exc
+
+
 def process_media(
     job: MediaJob,
     model: Any,
     language: str | None,
     beam_size: int,
+    txt: bool,
 ) -> None:
     logging.info("Processing: %s", job.source_file)
     with tempfile.TemporaryDirectory(prefix="media_transcribe_") as temp_dir:
@@ -400,13 +438,17 @@ def process_media(
             language=language,
             beam_size=beam_size,
         )
-        payload = build_transcript_json(
-            source_file=job.source_file,
-            duration_seconds=duration_seconds,
-            language_detected=language_detected,
-            segments=segments,
-        )
-        write_json(job.output_file, payload)
+        if txt:
+            full_transcript = " ".join(s["text"] for s in segments).strip()
+            write_txt(job.output_file, full_transcript)
+        else:
+            payload = build_transcript_json(
+                source_file=job.source_file,
+                duration_seconds=duration_seconds,
+                language_detected=language_detected,
+                segments=segments,
+            )
+            write_json(job.output_file, payload)
     logging.info("Wrote: %s", job.output_file)
 
 
@@ -415,7 +457,7 @@ def main() -> int:
     configure_logging(args.verbose)
 
     media_files = discover_media(args.input, args.recursive, args.files, args.file_list)
-    jobs = make_jobs(media_files, args.output, args.overwrite)
+    jobs = make_jobs(media_files, args.output, args.overwrite, args.txt)
     if not jobs:
         logging.info("No media files need processing.")
         return 0
@@ -431,10 +473,16 @@ def main() -> int:
         logging.error("Could not load Whisper model: %s", exc)
         return 1
 
+    try:
+        from tqdm import tqdm
+    except ImportError as exc:
+        logging.error("Python package 'tqdm' is not installed. Run: pip install -r requirements-transcribe.txt")
+        return 1
+
     failures = 0
-    for job in jobs:
+    for job in tqdm(jobs, desc="Files", unit="file", dynamic_ncols=True, disable=len(jobs) == 1):
         try:
-            process_media(job, model, args.language, args.beam_size)
+            process_media(job, model, args.language, args.beam_size, args.txt)
         except TranscriptionError as exc:
             failures += 1
             logging.error("%s", exc)

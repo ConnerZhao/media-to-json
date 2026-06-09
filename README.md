@@ -1,6 +1,6 @@
-# Media Transcription to JSON
+# Media Transcription to JSON (or TXT)
 
-`transcribe.py` extracts audio from video (`.mp4`, `.mov`, `.m4v`) and audio (`.mp3`, `.wav`, `.m4a`, `.flac`, `.aac`, `.ogg`, `.opus`, `.wma`, `.aiff`) files with ffmpeg, transcribes speech with faster-whisper, and writes one UTF-8 JSON file per input.
+`transcribe.py` extracts audio from video (`.mp4`, `.mov`, `.m4v`) and audio (`.mp3`, `.wav`, `.m4a`, `.flac`, `.aac`, `.ogg`, `.opus`, `.wma`, `.aiff`) files with ffmpeg, transcribes speech with faster-whisper, and writes one UTF-8 JSON or plain-text file per input.
 
 ## Installation
 
@@ -69,16 +69,23 @@ CPU-friendly mode:
 python transcribe.py --input "/path/to/video.mp4" --output "/path/to/output_folder" --device cpu --compute-type int8
 ```
 
+Output plain text instead of JSON (useful for feeding into an LLM):
+
+```bash
+python transcribe.py --input "/path/to/video.mp4" --output "/path/to/output_folder" --txt
+```
+
 ## CLI Options
 
 - `--input`: Required. A single media file (video or audio) or a folder of media files.
-- `--output`: Required. Folder for JSON transcript files.
+- `--output`: Required. Folder for transcript files.
 - `--model-size`: Whisper model size. Examples: `tiny`, `base`, `small`, `medium`, `large-v3`. Default: `small`.
 - `--device`: `auto`, `cpu`, or `cuda`. Default: `auto`.
 - `--compute-type`: faster-whisper compute type such as `int8`, `float16`, or `float32`. Default: `default`.
 - `--language`: Optional language code such as `en`. Omit for automatic language detection.
 - `--recursive`: Search subfolders when the input is a folder.
-- `--overwrite`: Replace existing JSON files.
+- `--txt`: Write plain-text `.txt` files instead of JSON. Output contains only the transcript text, with no timestamps or metadata.
+- `--overwrite`: Replace existing output files.
 - `--beam-size`: Decoding beam size. Default: `5`.
 - `--verbose`: Print detailed logs.
 
@@ -109,9 +116,15 @@ The script writes extracted audio to a temporary WAV file, then streams segments
 }
 ```
 
+## Example TXT Output
+
+```
+Welcome to the demo. Today we will review the quarterly results.
+```
+
 ## Notes
 
 - The first run downloads the selected Whisper model, so it can take longer and requires network access.
-- Output files are named after the source file stem, for example `meeting.mp4` and `Pres #1.mp3` become `meeting.json` and `Pres #1.json`.
+- Output files are named after the source file stem, for example `meeting.mp4` and `Pres #1.mp3` become `meeting.json` (or `meeting.txt` with `--txt`) and `Pres #1.json` (or `Pres #1.txt`).
 - Files with duplicate stems in different folders get numeric suffixes to avoid overwriting in the same output folder.
-- Existing JSON files are skipped unless `--overwrite` is passed.
+- Existing output files are skipped unless `--overwrite` is passed.
