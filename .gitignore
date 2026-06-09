@@ -3,3 +3,9 @@
 
 # Audio files
 audio/
+
+# Python
+__pycache__/
+
+# macOS
+.DS_Store
